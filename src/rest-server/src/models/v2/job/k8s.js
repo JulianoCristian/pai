@@ -371,6 +371,11 @@ const generateTaskRole = (frameworkName, taskRole, labels, config, storageConfig
     retryPolicy.fancyRetryPolicy = true;
     retryPolicy.maxRetryCount = config.taskRoles[taskRole].taskRetryCount || 0;
   }
+  // generate runtime env
+  const env = runtimeEnv.generateFrameworkEnv(frameworkName, config);
+  const envlist = Object.keys(env).map((name) => {
+    return {name, value: `${env[name]}`};
+  });
 
   const frameworkTaskRole = {
     name: convertName(taskRole),
@@ -423,6 +428,14 @@ const generateTaskRole = (frameworkName, taskRole, labels, config, storageConfig
                   name: 'STORAGE_CONFIGS',
                   value: JSON.stringify(storageConfig),
                 },
+                {
+                  name: 'PAI_TASK_ROLE_LIST',
+                  value: Object.keys(config.taskRoles).join(','),
+                },
+                {
+                  name: 'PAI_CURRENT_TASK_ROLE_NAME',
+                  value: taskRole,
+                },
               ],
               volumeMounts: [
                 {
@@ -456,7 +469,26 @@ const generateTaskRole = (frameworkName, taskRole, labels, config, storageConfig
                   ...infinibandDevice && {'rdma/hca': 1},
                 },
               },
-              env: [],
+              env: [
+                ...envlist,
+                {
+                  name: 'PAI_CURRENT_TASK_ROLE_CURRENT_TASK_INDEX',
+                  valueFrom: {
+                    fieldRef: {
+                      fieldPath: `metadata.annotations['FC_TASK_INDEX']`,
+                    },
+                  },
+                },
+                // backward compatibility
+                {
+                  name: 'PAI_TASK_INDEX',
+                  valueFrom: {
+                    fieldRef: {
+                      fieldPath: `metadata.annotations['FC_TASK_INDEX']`,
+                    },
+                  },
+                },
+              ],
               securityContext: {
                 capabilities: {
                   add: ['SYS_ADMIN', 'IPC_LOCK', 'DAC_READ_SEARCH'],
@@ -608,44 +640,13 @@ const generateFrameworkDescription = (frameworkName, virtualCluster, config, raw
       taskRoles: [],
     },
   };
-  // generate runtime env
-  const env = runtimeEnv.generateFrameworkEnv(frameworkName, config);
-  const envlist = Object.keys(env).map((name) => {
-    return {name, value: `${env[name]}`};
-  });
+
   // fill in task roles
   let totalGpuNumber = 0;
   for (let taskRole of Object.keys(config.taskRoles)) {
     totalGpuNumber += config.taskRoles[taskRole].resourcePerInstance.gpu * config.taskRoles[taskRole].instances;
     const taskRoleDescription = generateTaskRole(frameworkName, taskRole, frameworkLabels, config, storageConfig);
     taskRoleDescription.task.pod.spec.priorityClassName = `${encodeName(frameworkName)}-priority`;
-    taskRoleDescription.task.pod.spec.containers[0].env.push(...envlist.concat([
-      {
-        name: 'PAI_CURRENT_TASK_ROLE_NAME',
-        valueFrom: {
-          fieldRef: {
-            fieldPath: `metadata.annotations['FC_TASKROLE_NAME']`,
-          },
-        },
-      },
-      {
-        name: 'PAI_CURRENT_TASK_ROLE_CURRENT_TASK_INDEX',
-        valueFrom: {
-          fieldRef: {
-            fieldPath: `metadata.annotations['FC_TASK_INDEX']`,
-          },
-        },
-      },
-      // backward compatibility
-      {
-        name: 'PAI_TASK_INDEX',
-        valueFrom: {
-          fieldRef: {
-            fieldPath: `metadata.annotations['FC_TASK_INDEX']`,
-          },
-        },
-      },
-    ]));
     frameworkDescription.spec.taskRoles.push(taskRoleDescription);
   }
   frameworkDescription.metadata.annotations.totalGpuNumber = `${totalGpuNumber}`;
